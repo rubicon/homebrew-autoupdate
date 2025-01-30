@@ -28,11 +28,11 @@ module Autoupdate
     formatted_string
   end
 
-  def autoupdate_inadvisably_old?
+  def autoupdate_inadvisably_old_message
     creation = File.birthtime(Autoupdate::Core.location/"brew_autoupdate").to_date
     days_old = (Date.today - creation).to_i
 
-    return unless days_old >= 90
+    return if days_old < 90
 
     <<~EOS
       Autoupdate has been running for more than 90 days. Please consider
@@ -47,14 +47,14 @@ module Autoupdate
         Autoupdate is installed and running.
 
         Autoupdate was initialised on #{date_of_last_modification}.
-        \n#{autoupdate_inadvisably_old?}
+        \n#{autoupdate_inadvisably_old_message}
       EOS
     elsif autoupdate_installed_but_stopped?
       puts <<~EOS
         Autoupdate is installed but stopped.
 
         Autoupdate was initialised on #{date_of_last_modification}.
-        \n#{autoupdate_inadvisably_old?}
+        \n#{autoupdate_inadvisably_old_message}
       EOS
     elsif autoupdate_not_configured?
       puts "Autoupdate is not configured. Use `brew autoupdate start` to begin."
@@ -62,7 +62,7 @@ module Autoupdate
       puts <<~EOS
         Autoupdate cannot determine its status.
         Please feel free to file an issue with further information here:
-        https://github.com/Homebrew/homebrew-autoupdate/issues
+        https://github.com/DomT4/homebrew-autoupdate/issues
       EOS
     end
   end

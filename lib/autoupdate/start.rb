@@ -19,18 +19,11 @@ module Autoupdate
       auto_args << " && #{Autoupdate::Core.brew} upgrade --formula -v"
 
       if (HOMEBREW_PREFIX/"Caskroom").exist?
-        # Support unattended Cask upgrades that require `sudo` where possible.
-        # Homebrew themselves permit this same workaround so if they're
-        # comfortable enough with it I can tolerate it. Please consider the
-        # risks of leaving your admin password laying around the system in
-        # plaintext before using this, if you have no other use case for SUDO_ASKPASS.
-        if ENV["SUDO_ASKPASS"].nil?
+        if ENV["SUDO_ASKPASS"].nil? && !args.sudo?
           opoo <<~EOS
-            Please note if you use Casks that require `sudo` to upgrade there
-            are known issues with that use case and this command unless using
-            `SUDO_ASKPASS`.
-
-              https://github.com/Homebrew/homebrew-autoupdate/issues/40
+            Please note if you use Casks that require `sudo` to upgrade,
+            you need to use `--sudo` or define a custom `SUDO_ASKPASS`
+            environment variable.
 
           EOS
         end
@@ -43,35 +36,7 @@ module Autoupdate
     end
 
     # Enable the new AppleScript applet by default on Catalina and above.
-    # This enables us to do fairly broad testing with essentially
-    # no downside for the user. This will also pave the way for removal of
-    # terminal-notifier support, which is effectively dead and problematic
-    # upstream. Examples:
-    # https://github.com/julienXX/terminal-notifier/pull/289
-    # https://github.com/julienXX/terminal-notifier/pull/285
     auto_args << " && #{Autoupdate::Notify.new_notify}" if MacOS.version >= :catalina
-    # Otherwise on older platforms fallback to the old terminal-notifier style
-    # of notification where requested. This will be removed when the AppleScript
-    # applet proves itself consistently reliable & can be considered mostly complete.
-    if args.enable_notification? && MacOS.version < :yosemite
-      odie "terminal-notifier has deprecated support for anything below Yosemite"
-    elsif args.enable_notification? && MacOS.version >= :catalina
-      opoo <<~EOS
-        Notifications are automatically enabled for macOS Catalina
-        and newer using a native Applet. Passing --enable-notification
-        is no longer required.
-
-      EOS
-    elsif args.enable_notification? && Autoupdate::Notify.notifier
-      opoo <<~EOS
-        Notification support for macOS versions older than
-        Catalina (macOS 10.15) will be removed in October 2022
-        due to terminal-notifier essentially being Abandonware.
-
-        Newer versions of macOS are supported by a native Applet.
-      EOS
-      auto_args << " && #{Autoupdate::Notify.notify}"
-    end
 
     # Try to respect user choice as much as possible.
     env_cache = ENV.fetch("HOMEBREW_CACHE") if ENV["HOMEBREW_CACHE"]
@@ -93,7 +58,23 @@ module Autoupdate
     set_env << "\nexport HOMEBREW_DEVELOPER=#{env_dev}" if env_dev
     set_env << "\nexport HOMEBREW_NO_ANALYTICS=#{env_stats}" if env_stats
     set_env << "\nexport HOMEBREW_CASK_OPTS=#{env_cask}" if env_cask
-    set_env << "\nexport SUDO_ASKPASS=#{env_sudo}" if env_sudo
+
+    if args.sudo?
+      unless Formula["pinentry-mac"].any_version_installed?
+        odie <<~EOS
+          `--sudo` requires https://formulae.brew.sh/formula/pinentry-mac to be installed.
+          Please run `brew install pinentry-mac` and try again.
+        EOS
+      end
+      set_env << "\nexport SUDO_ASKPASS='#{Autoupdate::Core.location/"brew_autoupdate_sudo_gui"}'"
+      sudo_gui_script_contents = <<~EOS
+        #!/bin/sh
+        PATH='#{HOMEBREW_PREFIX}/bin'
+        printf "%s\n" "OPTION allow-external-cache" "SETOK OK" "SETCANCEL Cancel" "SETDESC homebrew-autoupdate needs your admin password to complete the upgrade" "SETPROMPT Enter Password:" "SETTITLE homebrew-autoupdate Password Request" "GETPIN" | pinentry-mac --no-global-grab --timeout 60 | /usr/bin/awk '/^D / {print substr($0, index($0, $2))}'
+      EOS
+    elsif env_sudo
+      set_env << "\nexport SUDO_ASKPASS=#{env_sudo}"
+    end
 
     script_contents = <<~EOS
       #!/bin/sh
@@ -133,6 +114,11 @@ module Autoupdate
     unless File.exist?(Autoupdate::Core.location/"brew_autoupdate")
       File.open(Autoupdate::Core.location/"brew_autoupdate", "w") { |sc| sc << script_contents }
       FileUtils.chmod 0555, Autoupdate::Core.location/"brew_autoupdate"
+    end
+
+    if args.sudo? && !File.exist?(Autoupdate::Core.location/"brew_autoupdate_sudo_gui")
+      File.open(Autoupdate::Core.location/"brew_autoupdate_sudo_gui", "w") { |sc| sc << sudo_gui_script_contents }
+      FileUtils.chmod 0555, Autoupdate::Core.location/"brew_autoupdate_sudo_gui"
     end
 
     interval ||= "86400"
@@ -194,6 +180,11 @@ module Autoupdate
     # It'll behave strangely if someone wants autoupdate
     # to run more than once an hour, but... surely not?
     interval_to_hours = interval.to_i / 60 / 60
-    puts "Homebrew will now automatically update every #{interval_to_hours} hours, or on system boot."
+    update_message = "Homebrew will now automatically update every #{interval_to_hours} hours"
+    if args.immediate?
+      puts "#{update_message}, now, and on system boot."
+    else
+      puts "#{update_message}."
+    end
   end
 end
